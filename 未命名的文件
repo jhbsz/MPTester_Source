@@ -1,0 +1,1049 @@
+#include <QTimer>
+#include <QProcess>
+#include <QApplication>
+
+#include "MPTester.h"
+#include "ui_MPTester.h"
+
+#include "Adgpib.h"
+
+/********************/
+#include <termios.h>
+#include <fcntl.h>          // for 'open'
+#include <signal.h>         // for 'kill'
+#include <sys/stat.h>
+/********************/
+
+/********************************/
+#define RSIZE 256            // Size of read buffer
+QTimer *timer = new QTimer;
+QTime MPTime, PassTime;
+QString msg, oldChip;
+
+double RWTime;
+QString RW_Time;            //RW_Time for QString, RWTime for double.
+
+int NumberCount=0, PassCount=0, FailCount=0, ContFailCount=0;
+QString Number_Count, Pass_Count, Fail_Count, ContFail_Count;
+bool timerSW = false;
+bool firsttime = true;
+
+QString Day2Str;
+QString Month2Str;
+QString Year2Str;
+/********************************/
+
+/***** pid use *****/
+char cmd[11];               //for system("kill pid")
+char childPID[7];
+
+pid_t My_Pid = 0, AP_Pid = 0;
+/*******************/
+
+/***** power variable ***********/
+int  ud;
+char wrtbuf[RSIZE + 1];      // R/W buffer
+char spr=0;
+bool GPIBReadyFlag = false;
+bool PWRSupplyReadyFlag = false;
+bool SetPWRCondFlag = false;
+bool powerNeeded = true;
+/********************************/
+
+/***** ComPort variable ***********/
+int StartTest = 0;
+struct termios oldcond,cond1;
+char com1_rbuf[64] ={0}, rbuf[64] = {0};
+int RecNum = 0, trans = 0, com1 = 0;
+/********************************/
+
+/*** convert msg(qstring) to string for compare ***/
+char *msg2char;
+QByteArray byteArray;
+/**************************************************/
+
+/***** for SQL use *****/
+#include <QSqlDatabase>
+#include <QtSql>
+#include <QtDebug>
+QString tt[10][5000];           // (table form) 9 column, 5000 row
+char dbContext[20][5000];       // (string length and data row size ) 20 for string length, 5000 for row
+QByteArray qba, qba1, qba2, qba3, qba4, qba5, qba6, qba7, qba8, qba9;             // for QString to char* (ba for byte array)
+int i = 0;
+bool firstReadDB = false;
+int testTimeOut;
+/**********************/
+
+/***** for LLF use *****/
+int FL_length;              // The length of the folder name that FlashList.csv within
+bool LLFFlag=false;
+QStringList FlashListstrings;
+int FlashNumber;
+int Load_FlashNum;
+#define BUFFER_SIZE 512
+int Result;
+int RetryCount;
+/***********************/
+
+/***** general variable *****/
+bool skipTestDone = false;
+int sysRet;
+
+QString SysErrLog = NULL;
+//char ChipName[15] = {0};      //Move to MPTester.h & change to QString type (strChipName)
+//char OldChipName[15] = {0};   //Move to MPTester.h & change to QString type (strChipName)
+bool OSFlag = false;
+
+QString qAvailable, qProcess, qOSFlag, qProgramName, qDeviceFolder, qINI_Path, qFTToolFileName, qExec_Par1, qTimeout, qFlashListFolder;
+QString BinResult;
+/****************************/
+
+void readDB()
+{
+    for (int ii = 0; ii < 20; ii ++)
+    {
+        for (int jj = 0; jj < 5000; jj++)
+            dbContext[ii][jj] = '\0';
+    }
+
+    QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");     // use what kind of database (ex. QMYSQL...)
+    QString dbPath = "/AlcorFT/MPTester/SQL3";
+    db.setDatabaseName(dbPath);                                 // use which database
+    if (!db.open())                                             // for DB open
+    {
+        qDebug("Connect Fail");
+        qApp->quit();
+    }
+
+    QSqlQuery qry;
+    qry.prepare( "SELECT * FROM MPTesterDB" );                  // put sql grammar
+    if( !qry.exec() )                                           // execute sql grammar
+        qDebug("Execute SQL failed!!");
+    else
+    {
+        QSqlRecord rec = qry.record();                          // get valid row
+        int cols = rec.count();                                 // get column
+
+        for( int r=0; qry.next(); r++ )
+        {
+            for( int c=0; c<cols; c++ )
+            {
+                tt[c][r] = qry.value(c).toString();             // char to QString
+                qba = tt[c][r].toLocal8Bit();                   // QString to byte array
+
+                // put qba to dbcontext row by row in column 1
+                strcpy(&dbContext[0][i], qba.data());
+                i+=20;
+            }
+        }
+    }
+}
+
+bool DetectGPIB()
+{
+
+    if(::ibfind("gpib0"))
+        //return false;
+
+    if (::ibsta & ERR)
+        return false;
+
+    return true;
+}
+
+void MPTester::GPIB_Detect()
+{
+    if (DetectGPIB()){
+        GPIBReadyFlag = true;
+        gpibLabel->setStyleSheet("background-color:yellow; color:blue");
+        gpibLabel->setText("GPIB exist");
+    }else{
+        GPIBReadyFlag = false;
+        gpibLabel->setStyleSheet("background-color:yellow; color:red");
+        gpibLabel->setText("No GPIB");
+    }
+}
+
+int sync_write(int ud)
+{
+    if( ibwrt(ud, wrtbuf, strlen(wrtbuf)) & ERR )
+    {
+        printf ("writing device failed : 0x%x.\n", iberr);
+        return -1;
+    }
+
+    ibwait(ud, TIMO);
+    if(ibsta & RQS)
+    {
+       ibrsp(ud, &spr);
+       printf("spr: %x\n", spr);
+    }
+
+    return 0;
+}
+
+void InitGPIB()
+{
+    if (DetectGPIB())
+        GPIBReadyFlag = true;
+    else
+        GPIBReadyFlag = false;
+}
+
+MPTester::MPTester(QWidget *parent)
+    :QMainWindow(parent),ui(new Ui::MPTester)
+{
+    //show ui
+    setupUi(this);
+
+    AP = new LocalServiceInterface("local.Service", "/", QDBusConnection::sessionBus(), this);
+    AP_Binning = 0;
+
+    //read database
+    readDB();
+
+    /* show last modified time (depend on SQL file */
+    QFileInfo myFile("/AlcorFT/MPTester/SQL3");
+    QDateTime MyDate;
+
+    if(myFile.exists()){
+        MyDate = myFile.lastModified();
+    }else{
+        qDebug("File not exist.");
+    }
+
+    strChipName.clear();
+    strOldChipName.clear();
+
+    dateLabel->setText(MyDate.toString("yyyy/MM/dd"));
+}
+
+void CloseAP(pid_t thePid)
+{
+    int Ret = 0, intLen = 0;
+    char *gcvtRet = NULL;
+    QByteArray KillCmd = "kill ";
+
+    if (thePid >= 1000000)
+        intLen = 7;
+    else if (thePid >= 100000)
+        intLen = 6;
+    else if (thePid >= 10000)
+        intLen = 5;
+    else if (thePid >= 1000)
+        intLen = 4;
+    else if (thePid >= 100)
+        intLen = 3;
+    else if (thePid >= 10)
+        intLen = 2;
+    else if (thePid >= 1)
+        intLen = 1;
+    else
+        return;
+
+    char Buf[intLen + 1];
+    memset(Buf, 0, sizeof(Buf));
+    Buf[intLen +1] = '\0';
+    gcvtRet = gcvt((double)thePid, intLen, Buf);
+    KillCmd.append((char *)Buf);
+
+    Ret = ::system(KillCmd);
+}
+
+MPTester::~MPTester()
+{
+    // when close MPTester, also close AP
+    strcat(cmd, childPID);
+
+    delete ui;
+}
+
+void MPTester::changeEvent(QEvent *e)
+{
+    QMainWindow::changeEvent(e);
+    switch (e->type()) {
+    case QEvent::LanguageChange:
+        retranslateUi(this);
+        break;
+    default:
+        break;
+    }
+}
+
+void MPTester::autompCheck()
+{
+    if (autompCheckBox->isChecked())
+        autompPushButton->setText(QApplication::translate("MPTester", "AutoMP", 0, QApplication::UnicodeUTF8));
+    else
+        autompPushButton->setText(QApplication::translate("MPTester", "LoadMP", 0, QApplication::UnicodeUTF8));
+}
+
+void MPTester::clearText()
+{
+    plainTextEdit->clear();
+}
+
+int InitComPort()
+{
+    int com_result = -1;
+    memset(&oldcond,0,sizeof(oldcond));
+    memset(&cond1,0,sizeof(cond1));
+    com1 = ::open ( "/dev/ttyS0" , O_RDWR | O_NDELAY | O_NOCTTY );
+
+    if (com1 < 0)
+    {
+        SysErrLog = (char *)"Open COM1 Fail";
+        return -1;                                              //Open Com1 Fail
+    }
+
+    if ((com_result = tcgetattr( com1, &oldcond)) == 0)
+    {
+        if ((com_result = cfsetspeed(&cond1, B9600) == 0))      //Set baud rate = 9600
+        {
+            cond1.c_cflag = ( CS8 | CREAD | CLOCAL | B9600);	//Set stop bit = 1, no check, 8bits
+            cond1.c_iflag = 0;
+            cond1.c_oflag = 0;
+            cond1.c_lflag = 0;
+            ::fcntl(com1, F_SETFL, FNDELAY);
+        }else{
+            SysErrLog = (char *)"Set COM1 Fail";
+            return -3;                                          //Set COM1 Fail
+        }
+    }
+    else
+    {
+        ::close(com1);
+        SysErrLog = (char *)"Get COM1 Status Fail";
+        return -2;                                              //Get Com1 Setting Fail
+    }
+
+    if ((com_result = tcsetattr(com1, TCSADRAIN, &cond1)) != 0)
+    {
+        ::close(com1);
+        SysErrLog = (char *)"Record COM1 Setting Fail";
+        return -4;                                              //Record COM1 Setting Fail
+    }
+
+    return 1;
+}
+
+void MPTester::errorMessage(QString ErrLog)
+{
+    errorMessageDialog = new QErrorMessage(this);
+    errorMessageDialog->showMessage(ErrLog);
+    MPTester::setVisible(false);
+}
+
+int file_exists(char *fileName)
+{
+    struct stat buf;
+    int i = stat(fileName, &buf);
+
+     /* File found */
+    if ( i == 0 )
+        return 1;
+
+     return 0;
+}
+
+void MPTester::on_LLFPushButton_clicked()
+{
+
+    LLFFlag = true;
+    on_beginPushButton_clicked();
+    LLFFlag = false;
+}
+
+void MPTester::on_beginPushButton_clicked()
+{
+    // add MP here
+
+//    int rec = 0;
+    int Ret = 0, crlf = 0;
+    time_t EntryTime, CurTime, PassingTime;
+    bStopFlag = false;
+    QByteArray arrayCOMRead;
+    int iCOMRecivedCount = 0;
+    QProcess *process = new QProcess;
+    QTime RecTimeOut;
+
+
+    GPIB_Detect();
+
+    char cpFile1[45];
+    char cpFile2[45];
+    char cpFile3[45];
+    char cpFile4[45];
+    char cpFile5[60];
+    char cpFile6[45];   // for flashlist.csv
+    char cpFile7[45];   // for 10_D1_K9F_BIN
+
+    this->beginPushButton->setEnabled(false);
+
+    if (LLFFlag == false)                           // do not clean chipname when press LLF button
+        strChipName.clear();
+        //        memset(ChipName, 0, sizeof(ChipName));
+
+    QString OpenAPcmd = "./";
+    //Initial ComPort, Message, GPIB
+    if (!bInitFlag)
+    {
+        int res = 0;
+        res = InitComPort();        //Initial ComPort
+
+        if (res == 1)
+            InitGPIB();             //Initial GPIB
+
+        My_Pid = getpid();
+        strChipName.clear();
+        strOldChipName.clear();
+//        memset(ChipName, 0 ,sizeof(ChipName));
+//        memset(OldChipName, 1, sizeof(OldChipName));
+//        OldChipName[sizeof(OldChipName) - 1] = 0;
+
+        bInitFlag = true;
+    }
+
+    if (SysErrLog != NULL)
+        goto SysErrLabel;
+    
+Routine_Label:
+
+    skipTestDone = false;
+
+    GPIB_Detect();          // to avoid GPIB card contact problem, check it each time when start test.
+
+    //Read ChipName from COM Port (HOST site)
+    //Target Received 'STX' + ChipName + 'ETX'
+    RecNum = 0;
+    if (LLFFlag)
+    {
+        StartTest = 1;      // when LLF, do not wait com port msg
+        CloseAP(AP_Pid);
+        usleep(100);
+        process->reset();
+    }
+    else
+        StartTest = 0;
+
+Label_WaitCOMInput:
+
+    arrayCOMRead.clear();
+    memset(rbuf, 0, sizeof(rbuf));
+
+    while ((StartTest == 0))
+    {
+        trans = ::write(com1, "Ready", 5);
+        if (trans < 0)
+        {
+            SysErrLog = (char *)"Write COM1 error";
+            goto SysErrLabel;
+        }
+
+        usleep(100000);
+        QApplication::processEvents();
+        QApplication::processEvents();
+
+        if (bStopFlag)
+            goto SysErrLabel;
+
+        iCOMRecivedCount = ::read(com1, rbuf, 1);
+        if ((iCOMRecivedCount == 1) && (rbuf[0] == Sig_STX))
+        {
+            RecTimeOut.restart();
+
+            while(1)
+            {
+                if (rbuf[iCOMRecivedCount - 1] != Sig_ETX)
+                    iCOMRecivedCount += ::read(com1, &rbuf[iCOMRecivedCount], 1);
+                else
+                    break;
+
+                if (RecTimeOut.elapsed() >= 1000)       //after get 'STX', time-out: 1 sec
+                {
+                    memset(rbuf, 0, sizeof(rbuf));
+                    break;
+                }
+            }
+
+            //already get Chipname
+            rbuf[iCOMRecivedCount - 1] = 0;
+            arrayCOMRead = &rbuf[1];
+            strChipName = arrayCOMRead;
+
+            if (strChipName.contains("AUGPIBACK"))
+                goto Label_WaitCOMInput;
+            else if (strChipName.contains("AUGPIBGPIBGPIB"))
+            {
+                usleep(500);
+                if (GPIBReadyFlag)
+                    trans = ::write(com1, "GPIBReadyGPIBReady", 18);
+                else
+                    trans = ::write(com1, "GPIBUNReadyGPIBUNReady", 22);
+
+                 goto Label_WaitCOMInput;
+            }else
+                StartTest = 1;
+        }
+
+
+
+//        rec = 1;
+//        while (rec > 0)
+//        {
+//            rec = ::read(com1, rbuf, 14);
+//            memcpy(&com1_rbuf[RecNum], rbuf, rec);
+//            RecNum += rec;
+
+//            if ( (RecNum == 9) && ( strcmp(com1_rbuf, (char *)"AUGPIBACK")) == 0 )
+//            {
+//                memset(rbuf, 0 , sizeof(rbuf));
+//                memset(com1_rbuf, 0, sizeof(com1_rbuf));
+//                RecNum = 0;
+//            }else if (RecNum == 14)
+//            {
+//                if (strcmp(com1_rbuf, (char *)"AUGPIBGPIBGPIB") == 0)
+//                {
+//                    memset(rbuf, 0 , sizeof(rbuf));
+//                    memset(com1_rbuf, 0, sizeof(com1_rbuf));
+//                    RecNum = 0;
+//                    usleep(100000);
+//                    if (GPIBReadyFlag)
+//                        trans = ::write(com1, "GPIBReadyGPIBReady", 18);
+//                    else
+//                        trans = ::write(com1, "GPIBUNReadyGPIBUNReady", 22);
+//                }else{
+//                    //pCOM1_Buf = com1_rbuf[0];
+//                    memcpy(ChipName, com1_rbuf, RecNum);
+//                    StartTest = 1;
+//                }
+//            }
+//        }
+    }
+
+//    if ((memcmp(ChipName, OldChipName, 14) != 0) || (::kill(AP_Pid, 0) != 0) || LLFFlag == true) // When ChipName Change
+    if ((strChipName != strOldChipName) || (::kill(AP_Pid, 0) != 0) || LLFFlag == true) // When ChipName Change
+    {
+        //toolName = exeName;
+        if ((AP_Pid != 0) && (::kill(AP_Pid, 0) == 0))
+        {
+            CloseAP(AP_Pid);
+            usleep(100);
+            process->reset();
+        }
+
+        memset( cpFile1, 0, sizeof(cpFile1) );
+        memset( cpFile2, 0, sizeof(cpFile2) );
+        memset( cpFile3, 0, sizeof(cpFile3) );
+        memset( cpFile4, 0, sizeof(cpFile4) );
+        memset( cpFile5, 0, sizeof(cpFile5) );
+        memset( cpFile6, 0, sizeof(cpFile6) );
+        memset( cpFile7, 0, sizeof(cpFile7) );
+
+        strncat(cpFile1,"cp ",3);
+        strncat(cpFile2,"cp ",3);
+        strncat(cpFile3,"cp ",3);
+        strncat(cpFile4,"cp ",3);
+        strncat(cpFile5,"cp ",3);
+        strncat(cpFile6,"cp ",3);
+        strncat(cpFile7,"cp ",3);
+
+        firstReadDB = false;
+
+        NumberCount = 0;
+        PassCount = 0;
+        FailCount = 0;
+        ContFailCount = 0;
+
+        AP_Pid = 0;
+//        this->Label_ChipName->setText((QString)ChipName);;
+//        memcpy(OldChipName, ChipName, 14);
+        this->Label_ChipName->setText(strChipName);;
+        strOldChipName = strChipName;
+        OpenAPcmd.clear();
+        OpenAPcmd.append("./");
+    }
+
+    //Now Get ChipName from Host, open AP depend on DataBase
+    if (firstReadDB == false)
+    {
+        char *cAvailable, *cProcess, *cOSFlag, *cProgramName, *cDeviceFolder, *cINI_Path, *cFTToolFileName, *cExec_Par1, *cTimeout, *cFlashListFolder;
+        char qryString1[144 + 15] = "SELECT * FROM MPTesterDB WHERE ProgramName = \"";
+        char qryString2[2] = "\"";
+//        strcat(qryString1, ChipName);
+        strcat(qryString1, strChipName.toLocal8Bit());
+        strcat(qryString1,qryString2);
+
+        QSqlQuery qry(qryString1);
+
+        if( !qry.exec() )                                           // execute sql grammar
+        {
+            firstReadDB = false;
+            qDebug("Execute SQL failed!!");
+        }
+        else
+        {
+            firstReadDB = true;
+
+            while (qry.next())
+            {
+                qAvailable = qry.value(0).toString();
+                qProcess = qry.value(1).toString();
+                qOSFlag = qry.value(2).toString();
+                qProgramName = qry.value(3).toString();
+                qDeviceFolder = qry.value(4).toString();
+                qINI_Path = qry.value(5).toString();
+                qFTToolFileName = qry.value(6).toString();
+                qExec_Par1 = qry.value(7).toString();
+                qTimeout = qry.value(8).toString();
+                if (LLFFlag == true)
+                    qFlashListFolder = qry.value(9).toString();
+            }
+
+            qba1 = qAvailable.toLocal8Bit();
+            cAvailable = qba1.data();
+
+            qba2 = qProcess.toLocal8Bit();
+            cProcess = qba2.data();
+
+            qba3 = qOSFlag.toLocal8Bit();
+            cOSFlag = qba3.data();
+
+            qba4 = qProgramName.toLocal8Bit();
+            cProgramName = qba4.data();
+
+            qba5 = qDeviceFolder.toLocal8Bit();
+            cDeviceFolder = qba5.data();
+
+            qba6 = qINI_Path.toLocal8Bit();
+            cINI_Path = qba6.data();
+
+            qba7 = qFTToolFileName.toLocal8Bit();
+            cFTToolFileName = qba7.data();
+
+            qba8 = qExec_Par1.toLocal8Bit();
+            cExec_Par1 = qba8.data();
+
+            qba9 = qTimeout.toLocal8Bit();
+            cTimeout = qba9.data();
+
+            if (LLFFlag == true)
+            {
+                qba = qFlashListFolder.toLocal8Bit();
+                cFlashListFolder = qba.data();
+            }
+
+            if (strncmp(cAvailable, "0", 1) == 0)             // check db Available field
+            {
+                qDebug("This controller is no longer available");
+                plainTextEdit->insertPlainText("This CTL is no longer available.");
+                QApplication::processEvents();
+            }
+            else
+            {
+                if (strncmp(cOSFlag, "0", 1) == 0)         // check db OSFlag field
+                    OSFlag=false;
+                else
+                    OSFlag=true;
+
+                if (strcmp(cINI_Path, "") != 0)
+                {
+
+                    strcat(cpFile1,cDeviceFolder);           // get into DeviceFolder
+                    strcat(cpFile2,cDeviceFolder);
+                    strcat(cpFile3,cDeviceFolder);
+                    strcat(cpFile4,cDeviceFolder);
+                    strcat(cpFile5,cDeviceFolder);
+                    strcat(cpFile6,cDeviceFolder);
+                    strcat(cpFile7,cDeviceFolder);
+
+                    strcat(cpFile1,cINI_Path);           // get into INI_Path
+                    strcat(cpFile2,cINI_Path);
+                    strcat(cpFile3,cINI_Path);
+                    strcat(cpFile4,cINI_Path);
+                    strcat(cpFile5,cINI_Path);
+
+                    if (LLFFlag == true)
+                    {
+                        // check strcmp or strstr for compare
+//                        if ((strcmp(ChipName,"6919")) || (strcmp(ChipName,"6921")) || (strcmp(ChipName,"6922")) || (strcmp(ChipName,"6925")))       // for FlashListLength ex: 98AN, 27, 0
+//                            FL_length = 4;
+//                        else if ((strcmp(ChipName,"6927")) || (strcmp(ChipName,"6990")) || (strcmp(ChipName,"6991")) || (strcmp(ChipName,"6998")))
+//                            FL_length = 2;
+//                        else
+//                            FL_length = 1;
+                        if ((strChipName.contains("6919")) || (strChipName.contains("6921")) || (strChipName.contains("6922")) || (strChipName.contains("6925")))       // for FlashListLength ex: 98AN, 27, 0
+                            FL_length = 4;
+                        else if ((strChipName.contains("6927")) || (strChipName.contains("6990")) || (strChipName.contains("6991")) || (strChipName.contains("6998")))
+                            FL_length = 2;
+                        else
+                            FL_length = 1;
+
+                        strncat(cpFile6,cFlashListFolder,FL_length);            // get FlashList.csv in which folder name
+                        strncat(cpFile7,cFlashListFolder,FL_length);            // get 10_D1_K9F.BIN in which folder name
+
+                        // copy FlashList.csv
+                        if (file_exists((char *)"FlashList.csv"))
+                            sysRet = system("rm FlashList.csv");
+
+                        strcat(cpFile6,"/FlashList.csv FlashList.csv");
+                        sysRet = system(cpFile6);
+
+//                        if (strstr(ChipName,"SLU") == 0)                        // chipname沒有SLU則走正常流程
+                        if (!strChipName.contains("SLU"))
+                        {
+//                            if (strstr(ChipName,"6928") == 0)
+                            if (!strChipName.contains("6928"))
+                            {
+                                // copy 10_D1_K9F.BIN
+                                if (file_exists((char *)"10_D1_K9F.BIN"))
+                                    sysRet = system("rm 10_D1_K9F.BIN");
+
+                                strcat(cpFile7,"/10_D1_K9F.BIN 10_D1_K9F.BIN");
+                                sysRet = system(cpFile7);
+                            }
+                            else
+                            {
+                                // copy 28_D1_K9F.BIN
+                                if (file_exists((char *)"28_D1_K9F.BIN"))
+                                    sysRet = system("rm 28_D1_K9F.BIN");
+
+                                strcat(cpFile7,"/28_D1_K9F.BIN 28_D1_K9F.BIN");
+                                sysRet = system(cpFile7);
+                            }
+                        }else{
+                            // copy 10_D1_K9F.BIN
+                            if (file_exists((char *)"10_D1_K9F.BIN"))
+                                sysRet = system("rm 10_D1_K9F.BIN");
+
+                            strcat(cpFile7,"/10_D1_K9F_MSL.BIN 10_D1_K9F.BIN");
+                            sysRet = system(cpFile7);
+                        }
+                    }
+
+                    // ALCORMP.INI
+                    if (file_exists((char *)"ALCORMP.INI"))
+                        sysRet = system("rm ALCORMP.INI");
+
+                    strcat(cpFile1,"/ALCORMP.INI ALCORMP.INI");
+                    sysRet = system(cpFile1);
+
+                    if ((strChipName.contains("KL")) || (strChipName.contains("PL")))
+                    {
+                        // PL_FT.INI
+                        if (file_exists((char *)"PL_FT.INI"))
+                            sysRet = system((char *)"rm PL_FT.INI");
+
+                        strcat(cpFile2, "/PL_FT.INI FT.INI");
+                        sysRet = system(cpFile2);
+                    }
+                    else
+                    {
+                        // FT.INI
+                        if (file_exists((char *)"FT.INI"))
+                            sysRet = system((char *)"rm FT.INI");
+
+                        strcat(cpFile2, "/FT.INI FT.INI");
+                        sysRet = system(cpFile2);
+                    }
+
+                    // RAM.BIN
+                    if (file_exists((char *)"RAM.BIN"))
+                        sysRet = system((char *)"rm RAM.BIN");
+
+                    strcat(cpFile3,"/RAM.BIN RAM.BIN");
+                    sysRet = system(cpFile3);
+
+                    // ROM.HEX
+                    if (file_exists((char *)"ROM.HEX"))
+                        sysRet = system((char *)"rm ROM.HEX");
+
+                    strcat(cpFile4,"/ROM.HEX ROM.HEX");
+                    sysRet = system((char *)cpFile4);
+
+//                    if (strncmp(ChipName,"AU69", 4) == 0)   // 若前四個字元為AU69則回傳為0
+                    if (strChipName.indexOf("AU69") == 0)
+                    {
+//                        if (strstr(ChipName,"SLU") != 0)    // 回傳chipname中第一次出現SLU的位置
+                        if (strChipName.contains("SLU"))
+                        {
+                            // TESTPROGRAMRAM.BIN
+                            if (file_exists((char *)"TESTPROGRAMRAM.BIN"))
+                                sysRet = system("rm TESTPROGRAMRAM.BIN");
+
+                            strcat(cpFile5, "/TESTPROGRAMRAM_MSL.BIN TESTPROGRAMRAM.BIN");
+                            sysRet = system((char *)cpFile5);
+                        }else{
+                            // TESTPROGRAMRAM.BIN
+                            if (file_exists((char *)"TESTPROGRAMRAM.BIN"))
+                                sysRet = system("rm TESTPROGRAMRAM.BIN");
+
+                            strcat(cpFile5, "/TESTPROGRAMRAM.BIN TESTPROGRAMRAM.BIN");
+                            sysRet = system((char *)cpFile5);
+                        }
+
+                    }
+                }
+
+                usleep(100000);            // change chipname may cause AP not execute, must do some delay here!!!
+
+                OpenAPcmd.append(cDeviceFolder);                    // DeviceFolder
+                OpenAPcmd.append(cFTToolFileName);                  // FTToolFileName
+
+                OpenAPcmd.append(" ");
+//                if (strstr(ChipName,"6438") == 0)
+                if (!strChipName.contains("6438"))
+                    OpenAPcmd.append(cExec_Par1);                   // for not 6438
+                else
+                    OpenAPcmd.append(cProgramName);                 // 6438 use full chipname for RKF/RIF
+
+
+                OpenAPcmd.append(" ");
+                OpenAPcmd.append(cProcess);                 // Process
+
+                testTimeOut = atoi(cTimeout);               // Timeout
+
+                QApplication::processEvents();
+                QApplication::processEvents();
+
+                if (LLFFlag == true)
+                {
+                    OpenAPcmd.append(" LLF");
+                    //OpenAPcmd.append(FlashListstrings[56]);                       // send low level format argument.
+                }else
+                    OpenAPcmd.append(" NoLLF");
+
+                process->reset();
+                process->start("./" + qDeviceFolder + "/" + qFTToolFileName);       // call AP up
+
+                goto startRWTest;
+            }
+        }
+
+        plainTextEdit->clear();
+        plainTextEdit->insertPlainText("No such chipname.");
+        QApplication::processEvents();
+        goto SysErrLabel;
+    }
+
+startRWTest:
+    if (crlf == 0)
+    {
+        plainTextEdit->insertPlainText("RW Begin Test...");
+        crlf = 1;
+    }
+    else
+    {
+        plainTextEdit->appendPlainText("\n");
+        plainTextEdit->insertPlainText("RW Begin Test...");
+    }
+
+    QApplication::processEvents();
+    QApplication::processEvents();
+    PassTime.start();
+
+    //Receive "Ready" Message form Test AP (TimeOut 2.0 Sec)
+    EntryTime = time(NULL);
+    PassingTime = 0;
+
+    if (process->pid() != 0)
+        AP_Pid = process->pid();                // get process pid
+    else
+    {
+        SysErrLog = "Open AP Fail";
+        goto SysErrLabel;
+    }
+
+    do{
+        AP_Binning = AP->getStart(true, qProcess, qProgramName);
+
+        if (AP_Binning != 0)
+            break;
+
+        CurTime = time(NULL);
+        PassingTime = abs(difftime(CurTime, EntryTime));
+
+        usleep(1);
+
+    }while (PassingTime <= 3.0 );
+
+    plainTextEdit->clear();
+
+    if (PassingTime >= 3.0)                             //Time-Out
+    {
+//       memset(OldChipName, 0, 14);
+       strOldChipName.clear();
+
+       if ((AP_Pid != 0) && (::kill(AP_Pid, 0) == 0))
+            CloseAP(AP_Pid);
+
+        usleep(10);
+        goto Binning_Label;
+    }
+
+    // close AP and reopen AP when timeout
+    if ((PassingTime >= testTimeOut) && ((AP_Pid != 0) && (::kill(AP_Pid, 0) == 0)))
+    {
+        firstReadDB = false;
+        skipTestDone = true;
+        CloseAP(AP_Pid);
+        usleep(100);
+        process->reset();
+        QApplication::processEvents();
+        QApplication::processEvents();
+        process->start("./" + qDeviceFolder + "/" + qFTToolFileName);       // call AP up
+        QApplication::processEvents();
+        QApplication::processEvents();
+    }
+
+Binning_Label:
+
+    if (AP_Binning == 1)
+    {
+        PassCount += 1;
+        ContFailCount = 0;
+        BinResult = "PASS";
+        trans = ::write(com1, "PASS", 4);
+    }
+    else if (AP_Binning == 2)
+    {
+        FailCount += 1;
+        ContFailCount += 1;
+        BinResult = "Bin2";
+        trans = ::write(com1, "Bin2", 4);
+    }
+    else if (AP_Binning == 3)
+    {
+        FailCount += 1;
+        ContFailCount += 1;
+        BinResult = "Bin3";
+        trans = ::write(com1, "Bin3", 4);
+    }
+    else if (AP_Binning == 4)
+    {
+        FailCount += 1;
+        ContFailCount += 1;
+        BinResult = "Bin4";
+        trans = ::write(com1, "Bin4", 4);
+    }
+    else if (AP_Binning == 5)
+    {
+        FailCount += 1;
+        ContFailCount += 1;
+        BinResult = "Bin5";
+        trans = ::write(com1, "Bin5", 4);
+    }
+    else
+    {
+        FailCount += 1;
+        ContFailCount += 1;
+        BinResult = "Bin2";
+        trans = ::write(com1, "Bin2", 4);
+    }
+
+    AP_Binning = 0;
+
+    if (shutdownCheckBox->isChecked())
+        if (ContFailCount == 5)
+            system("reboot");
+
+    RWTime = ((double)PassTime.elapsed()/1000);
+
+    RW_Time.sprintf("%.2f", RWTime);
+    plainTextEdit->insertPlainText("RW Test Time: ");
+    plainTextEdit->insertPlainText(RW_Time);
+    plainTextEdit->appendPlainText("");
+    QApplication::processEvents();
+
+    plainTextEdit->insertPlainText("Result: ");
+    plainTextEdit->insertPlainText(BinResult);
+    plainTextEdit->appendPlainText("");
+    QApplication::processEvents();
+
+    /* 測試次數 */
+    NumberCount = NumberCount + 1;
+    Number_Count.sprintf("%d", NumberCount);
+    plainTextEdit->insertPlainText("No: ");
+    plainTextEdit->insertPlainText(Number_Count);
+    plainTextEdit->appendPlainText("");
+    QApplication::processEvents();
+
+    /* pass次數 */
+    Pass_Count.sprintf("%d", PassCount);
+    plainTextEdit->insertPlainText("Pass: ");
+    plainTextEdit->insertPlainText(Pass_Count);
+    plainTextEdit->appendPlainText("");
+    QApplication::processEvents();
+
+    /* fail次數 */
+    Fail_Count.sprintf("%d", FailCount);
+    plainTextEdit->insertPlainText("Fail: ");
+    plainTextEdit->insertPlainText(Fail_Count);
+    plainTextEdit->appendPlainText("");
+    QApplication::processEvents();
+
+    /* 連續fail次數 */
+    ContFail_Count.sprintf("%d", ContFailCount);
+    plainTextEdit->insertPlainText("ContFail: ");
+    plainTextEdit->insertPlainText(ContFail_Count);
+    plainTextEdit->appendPlainText("");
+    QApplication::processEvents();
+
+SysErrLabel:
+    
+    usleep(10000);
+
+    if(SysErrLog != NULL)
+        errorMessage(SysErrLog);
+    else if (!bStopFlag)
+    {
+        LLFFlag = false;
+
+        if (BinResult != "PASS")
+        {
+            statusLabel->setStyleSheet("color:red");
+            this->statusLabel->setText(BinResult);
+        }
+        else
+        {
+            statusLabel->setStyleSheet("color:green");
+            this->statusLabel->setText(BinResult);
+        }
+
+
+//        if ((AP_Pid != 0) && (::kill(AP_Pid, 0) == 0))
+//        {
+//            CloseAP(AP_Pid);
+//            usleep(100);
+//            process->reset();
+//        }
+
+        goto Routine_Label;
+    }
+
+    this->beginPushButton->setEnabled(true);
+}
+
+void MPTester::on_stopPushButton_clicked()
+{
+    bStopFlag = true;
+
+    if ((AP_Pid != 0) && (::kill(AP_Pid, 0) == 0))
+        CloseAP(AP_Pid);
+}
+
+void MPTester::on_exitPushButton_clicked()
+{
+    CloseAP(getpid());
+}
+
+void MPTester::closeEvent(QCloseEvent *event)
+{
+    bStopFlag = true;
+
+    if ((AP_Pid != 0) && (::kill(AP_Pid, 0) == 0))
+        CloseAP(AP_Pid);
+
+    event->accept();
+}
+

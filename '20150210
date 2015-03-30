@@ -1,0 +1,177 @@
+20150210
+Modify DBus settimeout reference from database
+
+20141104
+Add AU84610-MBF LFT6/LFT2
+
+20140827
+Add AU6928I86-MEL LFT2/LFT3, AU6928H86-MEL LFT2/LFT3
+
+20140902
+modify AU6930F83 hw-id to 0x8C
+
+20140827
+Add AU6930E83/F83/G83-GEL LFT2/LFT3
+
+20140825
+Add AU6930D83-GEL LFT2/LFT3
+
+20140821
+Add AU6930C83-GEL LFT2/LFT3
+Add AU6990 series LFT3
+
+20140819
+Add AU6991E62-GDL/S62-RDL LFT3
+Add AU6930B83-GCL/GEL LFT2/LFT3	(CL暫無測試版）
+
+20140814
+Add AU6991R63RDL LFT2/LFT3
+
+20140707
+set LC enable in flashlist.csv make the value => 0
+
+20140630
+add LC value log, bin 5=>4
+
+20140522
+add AU6928H85/I85/J85 LFT2/LFT3/LST4
+
+20140520
+Update AP to V6.0.0.28.0 for AU6930 ( add a parameter for SCSICMD for skip cbw/csw check)
+
+20140428
+ADD AU6928H85-MEL LFT2
+
+20140415
+6928與xp 0415版同步更改ini檔的內容 
+
+20140414
+XP MP 將copy 60027/62027 程式碼刪除, 並將linux版的ram.bin改成舊的
+
+20140409
+6928 use MP ver 5.0.0.254, update chipname
+
+20140317
+6928退回ver 6.0.0.26.0版（RC改由CP來測)
+
+20140303
+add AU6928H84/I84/J84 folder for AutoMP
+
+20140225
+update AP for AU6928 series(ver 6.0.0.27.0), add check RC value
+modify "MP fail" to "Unknown Device"
+
+20140127
+remove old chipname(AU6921/28)
+add AU6928I84/J84 LFT2/LFT3/LST4
+
+20140124
+新增AU6921S85-MCL/MTL/MIL/MPL LFT2/LFT3/LST4
+
+20140121
+新增AU6921L82-MPL LFT2/LFT3/LST4
+新增AU6921S84-MPL LFT2/LFT3/LST4
+新增AU6921S85-MTL LFT2/LFT3/LST4
+新增AU6921T85-MTL LFT2/LFT3/LST4
+更改單flash的FT.INI檔 （S_FT.INI->PL_FT.INI）
+
+20140114
+補AP (for 6921/28) v6.0.0.25.2(與新版共存）
+
+20140113
+新增AU6921R85-MTL LFT2/LFT3/LST4
+
+20140106
+更新AP為v6.0.0.26.0
+新增AU6928H84-MDL LFT2/LFT3/LST4
+新增AU6928F84-MDL LFT2/LFT3/LST4
+
+20131223
+解決LFT3測試第二次即當機的問題(因改系統為DSUB 測完不用將usb release)
+
+20131220
+解決6485 hang住問題 （因沒裝置卻下write cmd導致）
+replace ram file for AU6921R84
+
+20131211
+新增AU6921R84-MSL LFT2
+新增AU6921S84-MSL LFT2
+
+20131210
+更新usb initial for only the first time enter the program (to solve pw hang problem)
+新增AU6921R84 LFT2/LFT3/LST4
+新增AU6928E84 LFT2/LFT3/LST4
+
+20131202
+新增6485 FT3流程與同步 (尚有問題 hold住)
+
+20131127
+新增LED check on and off
+for 6485:
+1. 更新通訊系統為dbus，新增FT6流程，
+2. 更改NBMD=>NB2, NB3, NB6 (FT3尚未有流程）
+3. 更改NMMD=>NM2, NM3, NM6 (FT3尚未有流程）
+4. A61=>B63
+
+20131119
+更新ap for 98 series: v6.0.0.25.2, 90 series: for v1.0.0.14.2
+新增shmoo tool for only ch1
+更新69xx通訊系統為dbus
+add AU6919B61 LFT2
+
+20131003
+add AU6922S61 LST5 for special voltage 4.75v
+
+20130926
+ADD AU6928B81/B83 LFT2/LFT3/LST4
+
+20130925
+add AU6921S84/T84 (S84已驗）
+add AU6991Q61
+
+20130913
+check PLU single flash with process FTB/FTC/STD
+add AU6921S83MSL, AU6922S61
+
+20130906
+modify 6259
+
+20130822
+新增 AU6991E66 FT2/FT3/ST4程式
+
+20130816
+新增 AU6921S83/T83 LFT2/LFT3/LST4
+
+20130805
+新增 AU6990A51/A53 FT2/FT3/ST4程式
+新增 AU6921S83PLU20/30/D0程式
+新增 AU6990/91 series check flash number
+90系列請記得放90_FF_READID.BIN檔
+更新程式至v1.0.0.14.0
+
+20130801
+新增 AU6990 series FT3 ST4 flow
+
+20130722
+Add test DQS flow(for MSL), check CE flow
+更新程式至v6.0.0.24.0
+
+20130715
+complie成release版本在執行時會當掉（修改testprgramram的長度from[45]=>[60])
+新增SQL3欄位for flashlist, 並於程式內判斷是否使用此欄位
+
+20130709
+新增AU6259X61KFUB1 (原AU6259KFS21 Samsung BT Sorting; ST2)
+
+20130708
+更改database讀取方式
+新增closeEvent
+
+20130705
+修正錯誤DB日期
+
+20130628
+v6.0.0.21.2/v1.0.0.12.2
+更新DB到XP版 20130625
+修正testunitready無限迴圈
+修正不同步問題
